@@ -4,11 +4,14 @@
 <meta charset="utf-8">
 <title>Behavioral Cloning for Autonomous Steering: A PilotNet Case Study</title>
 <style>
-  @page { size: A4; margin: 17mm 18mm; }
+  @page {
+    size: A4; margin: 17mm 18mm 20mm 18mm;
+    @bottom-center { content: counter(page) " / " counter(pages); font-size: 8.5pt; color: #777; }
+  }
   body {
     font-family: Georgia, 'Times New Roman', serif;
-    font-size: 10.3pt;
-    line-height: 1.42;
+    font-size: 10.2pt;
+    line-height: 1.38;
     color: #1a1a1a;
     max-width: 100%;
   }
@@ -45,7 +48,22 @@
 <body>
 
 <h1>Behavioral Cloning for Autonomous Steering: A PilotNet Case Study</h1>
-<p class="subtitle">Munjalsinh Zala — SoSe24-ML, Exam 3, Own ML Project Report</p>
+<p class="subtitle">Munjalsinh Zala — SoSe24-ML, Exam 3, Own ML Project Report — August 2026</p>
+
+<p>
+<strong>Abstract.</strong> This report develops, evaluates, and deploys a behavioral-cloning
+steering-angle predictor (PilotNet; Bojarski et al., 2016) for the Udacity Self-Driving Car
+Simulator. A from-scratch PilotNet trained on ~7,300 combined-track recordings is compared against
+a simpler baseline recipe using the identical architecture and data split; the optimized
+configuration &mdash; primarily a data-rebalancing strategy that treats real and synthetic
+training examples asymmetrically rather than just equalizing class counts &mdash; improves
+R&sup2; from 0.437 to 0.489 and direction accuracy from 51.2% to 54.6%, and drives the simulator
+successfully in closed loop. A side comparison against a pretrained ResNet18 backbone finds the
+compact, 287K-parameter, from-scratch model performs at least as well as an 11.2M-parameter
+pretrained alternative, evidence that model capacity is not the binding constraint on this
+dataset. The report concludes that the amount of genuinely diverse real training data, not the
+model or training recipe, is the ceiling on further improvement.
+</p>
 
 <h2>1. Introduction and Problem Relevance</h2>
 
@@ -137,8 +155,8 @@ kernels with stride 2, the last two use 3&times;3 kernels with stride 1), each f
 normalization and a ReLU activation, flattened into a four-layer fully-connected regression head
 (1152&rarr;126&rarr;64&rarr;32&rarr;1) with dropout (p=0.5) between the first three
 fully-connected layers. The output is a single unbounded scalar (the predicted steering angle),
-with no output activation, since this is a regression task. The full model has approximately 981K
-trainable parameters.
+with no output activation, since this is a regression task. The full model has 287,339
+trainable parameters (131,820 in the convolutional backbone, 155,519 in the fully-connected head).
 </p>
 
 <p>
@@ -190,6 +208,7 @@ split of the combined two-track dataset, are compared. Holding architecture and 
 the effect of the training-recipe changes below.
 </p>
 
+<p style="font-size: 9.5pt; color: #444; margin-bottom: 2pt;"><strong>Table 1.</strong> Baseline vs. optimized training configuration.</p>
 <table>
 <tr><th>Aspect</th><th>Baseline</th><th>Optimized</th></tr>
 <tr><td>Architecture</td><td colspan="2">PilotNet (identical in both)</td></tr>
@@ -261,6 +280,7 @@ dangerous mispredictions). A 5-bucket confusion matrix (hard-left/soft-left/stra
 hard-right, hard cutoff 0.25) makes the specific failure pattern visible (Figure 2, bottom).
 </p>
 
+<p style="font-size: 9.5pt; color: #444; margin-bottom: 2pt;"><strong>Table 2.</strong> Baseline vs. optimized evaluation metrics on the shared 1,200-frame validation set.</p>
 <table>
 <tr><th>Metric</th><th class="num">Baseline</th><th class="num">Optimized</th></tr>
 <tr><td>MSE</td><td class="num">0.06036</td><td class="num">0.05476</td></tr>
@@ -308,7 +328,7 @@ operationally-favorable trade as before, now larger in magnitude.
   soft-left &mdash; 312/747 baseline, 275/747 optimized. Present even in the baseline (which uses
   none of Section 4's left/right balancing), this points to a property of the raw data or
   architecture, not something rebalancing introduced. Targeted left/right-balancing experiments
-  narrowed it (right-turn accuracy 90.4%&rarr;96.1%) but did not eliminate it &mdash; the clearest
+  narrowed it (right-turn accuracy 88.2%&rarr;96.1%) but did not eliminate it &mdash; the clearest
   specific weakness of the final model.</li>
   <li><strong>Open-loop metrics do not fully predict closed-loop behavior.</strong> An earlier
   optimized configuration was deployed live in the Udacity simulator via a small Socket.IO bridge
@@ -414,10 +434,16 @@ andy8744/udacity-self-driving-car-behavioural-cloning.</p>
 <p>Udacity, Inc. <em>Self-Driving Car Simulator.</em></p>
 </div>
 
+<div style="border-top: 2px solid #3b6fa0; padding-top: 8pt; margin-top: 16pt;">
+<p style="font-size: 9.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5pt; margin: 0;">
+Exam 3 &mdash; Theoretical Questions (separate from the Project Task report above)</p>
+</div>
+
 <h2>Theoretical Question 1: Linear Models vs. CNNs vs. RNN/Transformers</h2>
 <p><em>Compare regarding typical data types, strengths/weaknesses, and overfitting risk &amp;
 regularization; one use case each.</em></p>
 
+<p style="font-size: 9.5pt; color: #444; margin-bottom: 2pt;"><strong>Table 3.</strong> Linear models vs. CNNs vs. RNN/Transformers.</p>
 <table style="font-size: 8.7pt;">
 <tr><th>Aspect</th><th>Linear models</th><th>CNNs</th><th>RNN / Transformers</th></tr>
 <tr><td>Typical data</td><td>Tabular/structured numeric features</td>
@@ -470,10 +496,9 @@ regularization; one use case each.</em></p>
   <li><strong>Gradient descent vs. ascent.</strong> Descent moves along the <em>negative</em>
   gradient to <em>minimize</em> an objective &mdash; the default for supervised learning, including
   this project's regression. Ascent moves along the <em>positive</em> gradient to
-  <em>maximize</em> an objective, used for a reward or likelihood to be maximized &mdash; e.g.
-  policy-gradient reinforcement learning, or log-likelihood maximization (often reframed as
-  minimizing negative log-likelihood in practice, which is why descent is more commonly
-  implemented).</li>
+  <em>maximize</em> an objective, used for a reward or likelihood to maximize &mdash; e.g.
+  policy-gradient RL, or log-likelihood maximization (often reframed as minimizing negative
+  log-likelihood, why descent is more commonly implemented).</li>
 </ol>
 
 </body>
