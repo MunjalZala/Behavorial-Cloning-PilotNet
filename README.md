@@ -17,9 +17,10 @@ Simulator, following NVIDIA's PilotNet architecture (Bojarski et al., 2016).
 ## Running
 
 Open `behavioral_cloning.ipynb` in Jupyter or VS Code and run all cells top to bottom. It
-downloads the dataset and the Udacity simulator automatically on first run. The final "Run the
-trained model live" cell starts a local server that the simulator connects to once you click
-Autonomous Mode.
+downloads the dataset and the Udacity simulator automatically on first run -- detecting the OS
+(Windows, macOS, or Linux) and fetching the matching simulator build. The final "Run the trained
+model live" cell starts a local server that the simulator connects to once you click Autonomous
+Mode.
 
 ## Reference
 
