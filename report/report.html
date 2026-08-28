@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Behavioral Cloning for Autonomous Steering: A PilotNet Case Study</title>
+<style>
+  @page { size: A4; margin: 17mm 18mm; }
+  body {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 10.3pt;
+    line-height: 1.42;
+    color: #1a1a1a;
+    max-width: 100%;
+  }
+  h1 { font-size: 18pt; margin-bottom: 2pt; }
+  .subtitle { font-size: 11pt; color: #555; margin-top: 0; margin-bottom: 18pt; }
+  h2 {
+    font-size: 13pt;
+    margin-top: 16pt;
+    margin-bottom: 5pt;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 2pt;
+    page-break-after: avoid;
+  }
+  h3 { font-size: 11.5pt; margin-top: 11pt; margin-bottom: 3pt; page-break-after: avoid; }
+  p { margin: 5pt 0; text-align: justify; }
+  ul, ol { margin: 5pt 0; padding-left: 20pt; }
+  li { margin: 2pt 0; }
+  table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 10pt; }
+  th, td { border: 1px solid #999; padding: 4pt 8pt; text-align: left; }
+  th { background: #eef2f6; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  figure { margin: 8pt 0; text-align: center; page-break-inside: avoid; }
+  figure img { max-width: 100%; }
+  figcaption { font-size: 9.5pt; color: #444; margin-top: 4pt; }
+  code { font-family: Consolas, monospace; font-size: 9.5pt; background: #f2f2f2; padding: 1pt 3pt; }
+  .callout {
+    background: #f7f8fa; border-left: 3px solid #3b6fa0; padding: 8pt 12pt;
+    margin: 10pt 0; font-size: 10.5pt;
+  }
+  .refs p { margin: 4pt 0; font-size: 10pt; }
+  .section-break { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<h1>Behavioral Cloning for Autonomous Steering: A PilotNet Case Study</h1>
+<p class="subtitle">Munjalsinh Zala — SoSe24-ML, Exam 3, Own ML Project Report</p>
+
+<h2>1. Introduction and Problem Relevance</h2>
+
+<p>
+Behavioral cloning is a form of imitation learning in which a control policy is learned directly
+from demonstrations, without an explicit model of the environment's dynamics. In the context of
+autonomous driving, this means learning a mapping from raw camera pixels straight to a driving
+command &mdash; here, a steering angle &mdash; by observing a human operator's recorded driving
+behavior. This approach was popularized by Bojarski et al.'s 2016 NVIDIA paper, <em>End to End
+Learning for Self-Driving Cars</em>, which introduced the compact convolutional architecture
+("PilotNet") used as the basis for this project.
+</p>
+
+<p>
+The problem is relevant on several levels. Technically, end-to-end behavioral cloning replaces a
+hand-engineered perception&rarr;planning&rarr;control pipeline with a single learned function,
+data-efficient to prototype but raising hard questions about robustness and interpretability that
+this report investigates directly. Commercially, vision-based lane-keeping and steering-assist
+features are now standard in consumer ADAS, and behavioral cloning is an accessible way to
+prototype such policies without hand-labeled lane or object annotations. Socially, understanding
+<em>where</em> and <em>why</em> such models fail matters for public trust and regulatory scrutiny
+of vision-based driving systems &mdash; a theme this report returns to in Sections 5 and 6.
+</p>
+
+<p>
+Concretely, this project trains a model to predict a continuous steering angle from a single
+front-facing camera frame in a simulated driving environment (the Udacity Self-Driving Car
+Simulator). Using a simulator rather than a real vehicle is itself a relevant methodological choice:
+it isolates the perception-to-control learning problem from real-world safety risk, while still
+allowing the trained model to be deployed and tested in closed loop &mdash; not just evaluated
+offline &mdash; which this project also does (Section 5).
+</p>
+
+<h2>2. Data</h2>
+
+<p>
+The dataset used is <em>andy8744/udacity-self-driving-car-behavioural-cloning</em> on Kaggle, a
+repackaging of recordings from the Udacity Self-Driving Car Simulator in the same
+<code>driving_log.csv</code>/<code>IMG</code> format used by Udacity's own Self-Driving Car
+Engineer coursework. It was chosen specifically because it matches a well-documented reference
+architecture and evaluation methodology (PilotNet), and &mdash; critically &mdash; because the same
+simulator that generated the data is itself downloadable and drivable, which let this project
+validate the trained model in closed loop rather than relying on offline metrics alone.
+</p>
+
+<p>
+The dataset contains two separate recordings, corresponding to two visually distinct tracks: a
+lake-side track (3,930 rows) and a jungle-themed track (3,404 rows), for 7,334 rows total. Each row
+represents one timestep and includes three synchronized camera images (center, left, right offset
+by a fixed lateral distance) plus the human operator's recorded steering angle at that instant
+(throttle, brake, and speed are also recorded but unused in this project).
+</p>
+
+<figure>
+  <img src="fig_steering_dist.png" alt="Steering angle distribution histogram">
+  <figcaption>Figure 1. Steering angle distribution across both tracks combined. The dataset is
+  heavily skewed toward near-zero (straight-line) steering, since most driving on either track is
+  straight-line road-following. This imbalance directly motivates the straight-frame downsampling
+  and left/right balancing used in the optimized configuration (Section 4).</figcaption>
+</figure>
+
+<p>
+<strong>Size and quality.</strong> At ~7,334 unique timesteps (effectively ~22,000 images across
+all three cameras), this is a small dataset by deep-learning standards. It was collected by a
+single human operator driving with keyboard/mouse input, which introduces some recording noise
+(small involuntary steering corrections) but is otherwise clean &mdash; there are no missing
+images, corrupted files, or inconsistent formats once the per-track path resolution described in
+Section 3 is applied.
+</p>
+
+<p>
+<strong>Expected limitations.</strong> Four limitations were expected and confirmed: (1) the data
+is Unity-rendered, so its visual statistics (flatter shading, repeating textures, no sensor noise)
+differ from real-world imagery; (2) the dataset is small for a vision task, with no official
+train/validation split; (3) it reflects one human's driving style on exactly two tracks, with no
+adverse conditions (rain, night, traffic) represented; and (4) the domain gap in (1) proved
+empirically significant, not just theoretical &mdash; a side investigation (Section 6) found a
+ResNet18 backbone pretrained on real ImageNet photographs transferred meaningfully <em>worse</em>
+than the compact from-scratch PilotNet used here, evidence that generic pretrained features are a
+weaker prior on Unity-rendered imagery than on real photographs.
+</p>
+
+<h2>3. Model Setup: Architecture and Preprocessing</h2>
+
+<p>
+<strong>Architecture.</strong> The model is PilotNet as described by Bojarski et al.: five
+convolutional layers (24&rarr;36&rarr;48&rarr;64&rarr;64 channels; the first three use 5&times;5
+kernels with stride 2, the last two use 3&times;3 kernels with stride 1), each followed by batch
+normalization and a ReLU activation, flattened into a four-layer fully-connected regression head
+(1152&rarr;126&rarr;64&rarr;32&rarr;1) with dropout (p=0.5) between the first three
+fully-connected layers. The output is a single unbounded scalar (the predicted steering angle),
+with no output activation, since this is a regression task. The full model has approximately 981K
+trainable parameters.
+</p>
+
+<p>
+This architecture was chosen for three reasons: it is small enough to train from scratch on
+CPU-only hardware (no GPU was available) in a practical amount of time; it is the reference
+architecture specifically documented for this exact task, an externally-validated starting point
+rather than an arbitrary design; and, somewhat unexpectedly, a side-by-side comparison against a
+much larger pretrained ResNet18 backbone (11.2M parameters) found the compact from-scratch PilotNet
+matched or exceeded it on this data (Section 6), directly supporting the architecture choice here.
+</p>
+
+<h3>Preprocessing pipeline</h3>
+<p>Each frame is processed as follows before being fed to the network:</p>
+<ol>
+  <li><strong>Crop</strong> the top 60 pixels (sky) and bottom 25 pixels (the car's hood), neither
+  of which carries steering-relevant information; this reduces irrelevant input variance and
+  focuses the network's receptive field on the road.</li>
+  <li><strong>Resize</strong> to 200&times;66 pixels, matching the PilotNet paper's input
+  resolution and keeping the network small and fast to train.</li>
+  <li><strong>Convert color space from BGR to YUV</strong>, following the reference architecture
+  exactly; this choice was inherited from the paper rather than re-derived, and was not varied in
+  this project.</li>
+  <li><strong>Normalize</strong> pixel values to approximately [-1, 1] via <code>x/127.5 -
+  1</code>.</li>
+  <li><strong>Left/right camera substitution</strong> with a fixed &plusmn;0.2 steering correction:
+  since each timestep includes three simultaneous camera views, the left/right images can be
+  treated as "what the center camera would see if the car were off-center," with the steering
+  target adjusted accordingly. This both triples the effective training signal and, more
+  importantly, teaches the model recovery behavior &mdash; steering back toward the lane center
+  &mdash; which a model trained only on center-camera frames would never see.</li>
+  <li><strong>Horizontal flip</strong> (50% probability, steering angle negated), a free and exact
+  augmentation exploiting the left-right symmetry of driving.</li>
+</ol>
+
+<p>
+<strong>Regularization.</strong> Batch normalization after every convolutional layer and dropout in
+the fully-connected head were added after early experiments (without them) showed validation loss
+diverging from training loss &mdash; a clear overfitting signature at this data scale. Weight decay
+(L2 regularization, 1e-4) and an adaptive learning-rate schedule (<code>ReduceLROnPlateau</code>)
+were added for the same reason and are part of the "optimized" configuration described next.
+</p>
+
+<h2>4. Baseline vs. Optimized Configuration</h2>
+
+<p>
+To satisfy the requirement of comparing against a simpler baseline, two configurations of the
+<em>same architecture</em>, trained and evaluated on the <em>identical</em> 80/20 train/validation
+split of the combined two-track dataset, are compared. Holding architecture and data fixed isolates
+the effect of the training-recipe changes below.
+</p>
+
+<table>
+<tr><th>Aspect</th><th>Baseline</th><th>Optimized</th></tr>
+<tr><td>Architecture</td><td colspan="2">PilotNet (identical in both)</td></tr>
+<tr><td>Preprocessing</td><td colspan="2">Crop / resize / YUV / normalize (identical in both)</td></tr>
+<tr><td>Camera + flip augmentation</td><td colspan="2">Yes (identical in both)</td></tr>
+<tr><td>Class rebalancing</td><td>None &mdash; plain shuffled mini-batches over the natural
+    ~62:38 straight:turning split (Figure 1)</td>
+    <td>Straight frames physically downsampled to 60% of their split count (2,165 of 3,609);
+    left-turn frames kept 100% real (1,368); right-turn frames padded with synthetic
+    flipped-left-camera mirrors to match the left-turn count exactly &mdash; still a plain
+    shuffled <code>DataLoader</code>, no reweighting sampler</td></tr>
+<tr><td>Learning rate</td><td>Fixed (Adam, 1e-3)</td>
+    <td>Adaptive (<code>ReduceLROnPlateau</code>) starting from 1e-3</td></tr>
+<tr><td>Weight decay</td><td>None</td><td>1e-4 (L2)</td></tr>
+<tr><td>Extra augmentation</td><td>None</td>
+    <td>Random horizontal translation (&plusmn;25px, steering corrected by 0.004/px) + brightness
+    jitter</td></tr>
+<tr><td>Loss function</td><td colspan="2">Mean squared error (identical in both)</td></tr>
+</table>
+
+<p>
+The class-rebalancing mechanism went through several iterations, and the search itself is one of
+this project's more informative findings. An initial <code>WeightedRandomSampler</code> (reweighting
+per-epoch sampling probability, not the underlying data) fixed the straight:turning balance but left
+a systematic left-steering bias uncorrected, traced to a genuine ~60:40 left:right skew in the raw
+turning frames (1,368 left vs. 890 right). A symmetric flip-doubling fix &mdash; mirroring every
+turning frame into the opposite class &mdash; corrected left:right balance but diluted both classes
+equally with synthetic data (R&sup2;=0.473). Physically downsampling straight frames was then swept
+across three keep-rates: 15% regressed sharply (a too-small, low-diversity straight pool produced a
+<em>new</em> left bias, only 17.7% of straight frames correctly classified); 60% modestly beat the
+sampler baseline; 50% was a small step back from 60%. Finally, replacing symmetric flip-doubling with
+the asymmetric scheme above &mdash; left 100% real, only right padded to parity &mdash; gave the best
+result of the project, improving R&sup2;, direction accuracy, and large-error rate together rather
+than trading one for another (Section 5). The lesson: <em>which</em> rows are real vs. synthetic
+padding mattered more than simply equalizing class counts.
+</p>
+
+<p>
+Augmentation intensity was tuned separately and empirically: intensities reported in prior community
+implementations of this task (&plusmn;50px translation, 0.4&ndash;1.3&times; brightness)
+destabilized training for this smaller, from-scratch model, so intensity was reduced to
+&plusmn;25px / 0.6&ndash;1.2&times;, discussed further as a failure case in Section 5.
+</p>
+
+<h2>5. Evaluation</h2>
+
+<p>
+Six metrics are reported. <strong>RMSE</strong> and <strong>MAE</strong> are in the same units as
+the steering angle itself (roughly [-1, 1]) and are directly interpretable. <strong>R&sup2;</strong>
+compares the model's mean squared error against a trivial baseline that always predicts the mean
+steering angle; this metric matters specifically because of the class imbalance shown in Figure 1
+&mdash; a model that has simply learned to predict approximately zero for every frame can post a
+deceptively low raw MSE, since roughly 62% of validation frames genuinely have near-zero steering.
+R&sup2; makes this failure mode visible. Because straight-line frames dominate the dataset and are
+easy (predicting ~0 is nearly correct), <strong>RMSE is additionally reported separately for
+straight (|angle| &lt; 0.05) and turning (|angle| &ge; 0.05) frames</strong>, since an aggregate
+average can hide poor turning performance behind a large majority of easy straight frames.
+</p>
+
+<p>
+RMSE-based metrics share a blind spot: they penalize any magnitude difference equally, even when
+the model chose the correct steering <em>direction</em> and simply differed on how sharply to turn
+&mdash; not necessarily a real mistake, given this data reflects one human's driving style rather
+than a single correct answer. Two further metrics target the more driving-relevant question of
+whether the model made the correct qualitative decision: <strong>direction accuracy</strong>
+(predicted and actual steering agree on straight/left/right, threshold 0.05) and
+<strong>large-error rate</strong> (|actual &minus; predicted| &gt; 0.3, a proxy for outright
+dangerous mispredictions). A 5-bucket confusion matrix (hard-left/soft-left/straight/soft-right/
+hard-right, hard cutoff 0.25) makes the specific failure pattern visible (Figure 2, bottom).
+</p>
+
+<table>
+<tr><th>Metric</th><th class="num">Baseline</th><th class="num">Optimized</th></tr>
+<tr><td>MSE</td><td class="num">0.06036</td><td class="num">0.05476</td></tr>
+<tr><td>RMSE</td><td class="num">0.24569</td><td class="num">0.23401</td></tr>
+<tr><td>MAE</td><td class="num">0.16978</td><td class="num">0.16361</td></tr>
+<tr><td>R&sup2;</td><td class="num">0.437</td><td class="num">0.489</td></tr>
+<tr><td>Straight-frame RMSE (n=747)</td><td class="num">0.13031</td><td class="num">0.14038</td></tr>
+<tr><td>Turning-frame RMSE (n=453)</td><td class="num">0.36318</td><td class="num">0.33550</td></tr>
+<tr><td>Direction accuracy (3-way)</td><td class="num">51.2%</td><td class="num">54.6%</td></tr>
+<tr><td>Large-error rate (|error| &gt; 0.3)</td><td class="num">15.1%</td><td class="num">13.5%</td></tr>
+</table>
+
+<figure>
+  <img src="fig_comparison.png" alt="Bar charts comparing baseline and optimized metrics, and 5-bucket confusion matrices for both">
+  <figcaption>Figure 2. Top: baseline vs. optimized configuration across error metrics (left) and
+  R&sup2;/direction accuracy/large-error rate (right) &mdash; every metric moves in the optimized
+  configuration's favor. Bottom: 5-bucket steering confusion matrices on the shared 1,200-frame
+  validation set (rows=actual, cols=predicted, shaded by row %). The dominant error in both
+  configurations is straight frames predicted as soft-left &mdash; see discussion below.</figcaption>
+</figure>
+
+<p>
+<strong>Discussion.</strong> The final configuration shows a real, consistent gap over baseline
+across every metric at once: R&sup2; improves by 0.052 (0.437&rarr;0.489), MSE drops 9.3%,
+direction accuracy improves 3.4 points (51.2%&rarr;54.6%), large-error rate falls 1.6 points
+(15.1%&rarr;13.5%). Re-running identical code at earlier stages of this project produced R&sup2;
+swings of several hundredths from random initialization alone, so no single metric here is strong
+evidence in isolation &mdash; but four largely independent measures (R&sup2;, direction accuracy,
+large-error rate, and the turning/straight RMSE split) all moving together at once is much less
+likely by chance. As before, there is a genuine trade: straight-frame RMSE gets slightly worse
+(0.130&rarr;0.140) while turning-frame RMSE improves (0.363&rarr;0.336), the same
+operationally-favorable trade as before, now larger in magnitude.
+</p>
+
+<h3>Failure cases</h3>
+<ol>
+  <li><strong>Turning remains the dominant error source in both configurations</strong> &mdash;
+  turning-frame RMSE is 2.4&ndash;2.8&times; straight-frame RMSE in both configurations (0.363 vs.
+  0.130 baseline; 0.336 vs. 0.140 optimized), a ratio that held across essentially every
+  configuration tested in this project, including alternative architectures explored outside this
+  report's main comparison. The model is disproportionately worse exactly where accuracy matters
+  most for staying on the road.</li>
+  <li><strong>A persistent left-leaning bias on straight road.</strong> Figure 2 (bottom) shows the largest
+  single source of misclassification in both configurations is straight frames predicted as
+  soft-left &mdash; 312/747 baseline, 275/747 optimized. Present even in the baseline (which uses
+  none of Section 4's left/right balancing), this points to a property of the raw data or
+  architecture, not something rebalancing introduced. Targeted left/right-balancing experiments
+  narrowed it (right-turn accuracy 90.4%&rarr;96.1%) but did not eliminate it &mdash; the clearest
+  specific weakness of the final model.</li>
+  <li><strong>Open-loop metrics do not fully predict closed-loop behavior.</strong> An earlier
+  optimized configuration was deployed live in the Udacity simulator via a small Socket.IO bridge
+  script and completed extended stretches of both tracks autonomously. This is not something the
+  offline metrics above measure directly: they evaluate one frame at a time against a fixed,
+  human-driven trajectory (open-loop), whereas driving is closed-loop &mdash; small per-frame
+  errors compound as the car drifts into road positions under-represented in training data, a
+  well-known distributional-shift problem in imitation learning. The final configuration above was
+  not independently re-verified live.</li>
+  <li><strong>Augmentation intensity does not transfer directly from other work.</strong> Intensities
+  standard in prior community implementations of this task measurably destabilized training here
+  (Section 4); testing three levels found a monotonic negative relationship between intensity and
+  validation performance for this architecture/data scale &mdash; augmentation hyperparameters must
+  be re-validated per model/dataset rather than assumed to transfer.</li>
+</ol>
+
+<h2>6. Interpretation</h2>
+
+<p>
+<strong>What did the model learn?</strong> The model receives only raw pixels and a scalar steering
+target &mdash; no lane-line, object, or semantic labels &mdash; so any competence must come from
+implicitly associating road-edge and lane-curvature cues with the correct steering response.
+Several design choices only make sense, and only work, if this is what the network learned: the
+crop step (Section 3) restricts input to the road region; the left/right-camera augmentation only
+teaches useful "recovery" behavior if the network uses lateral road-position information rather
+than memorizing textures; and flip augmentation only helps if the network's features are genuinely
+spatial/geometric rather than track-specific memorization. That flip augmentation measurably helps
+(part of every configuration including baseline; removing it during early experiments produced
+visibly worse turning behavior) is itself indirect evidence for "lane geometry" over memorization.
+</p>
+
+<p>
+<strong>Where can it fail?</strong> Four failure modes were observed directly in this project: sharp
+or unusual turns (the turning-RMSE gap, Section 5); a left-leaning bias on genuinely straight road
+that persisted across every configuration tested including the baseline, and which targeted
+rebalancing narrowed but did not remove (Section 5), suggesting a root cause in the raw data or
+architecture rather than class-count imbalance alone; track-specific visual style, where
+brightness-jitter augmentation aimed at generalizing across the lake and jungle tracks' different
+color palettes produced at best a neutral effect &mdash; two tracks may simply be too few to learn a
+genuinely lighting-invariant representation; and, more fundamentally, that the model can only handle
+situations represented in its training demonstrations at all &mdash; a structural limitation of
+behavioral cloning itself, and the reason the closed-loop distributional-shift issue in Section 5
+exists in the first place.
+</p>
+
+<p>
+<strong>A domain-gap finding.</strong> A side investigation trained a ResNet18 backbone pretrained on
+ImageNet, first with only its final residual block unfrozen and later fully fine-tuned, against the
+PilotNet models above. Fully frozen (a small regression head on fixed ImageNet features), it
+collapsed into predicting near-zero steering for almost every frame &mdash; the <em>best</em>
+straight-frame RMSE of any configuration tested, but by a wide margin the <em>worst</em>
+turning-frame RMSE, the clearest signature of a model minimizing error on the easy majority class
+rather than tracking the road. Unfreezing more of the backbone improved this, but even a fully
+fine-tuned ResNet18 did not clearly exceed the compact from-scratch PilotNet. This suggests "what a
+model learns" depends as much on whether its input representation matches the task's visual domain
+as on raw capacity &mdash; more parameters is not automatically better when source and target
+domains (real photographs vs. a Unity-rendered simulator) differ this much.
+</p>
+
+<h2>7. Conclusion: Why This Data and Setup Were the Right Choice (or Not)</h2>
+
+<p>
+This dataset and setup were, on balance, the right choice for the goals of this project. Using data
+recorded from an actual drivable simulator &mdash; rather than a static image dataset &mdash; made
+it possible to go beyond offline metrics to a genuine closed-loop test, directly surfacing the
+open-loop/closed-loop gap discussed in Section 5, a more sophisticated and honest evaluation than
+most small-scale behavioral-cloning projects attempt. The compact, from-scratch PilotNet
+architecture was well matched to the CPU-only compute budget available, and the comparison against
+a pretrained ResNet18 (Section 6) confirms this was not a compromise on quality: the larger,
+pretrained alternative did not outperform it here.
+</p>
+
+<p>
+The setup was not, however, unambiguously right for every goal. The dataset's small size and
+narrow diversity (two tracks, one driver, no adverse conditions) still appear to place a real
+ceiling on results: across every training-recipe variation tried, validation R&sup2; ranged from
+roughly 0.43 to 0.49, and turning-frame error never closed most of the gap to straight-frame error.
+Notably, the single largest improvement (R&sup2; 0.437&rarr;0.489) came not from a broader recipe
+change but specifically from <em>how</em> class rebalancing was done &mdash; real vs. synthetic
+data treated asymmetrically rather than just equalizing class counts (Section 4) &mdash; and a
+left-leaning bias on straight road resisted direct correction despite several dedicated attempts.
+This is more consistent with a ceiling on genuinely diverse real data per class than a single
+implementation flaw: recipe choices moved results meaningfully but could not manufacture diversity
+the raw recordings don't contain. A larger, more diverse dataset would likely still be a more
+effective investment than further tuning on the current data.
+</p>
+
+<div class="callout">
+<strong>Summary.</strong> For building and deploying a complete behavioral-cloning pipeline end to
+end &mdash; including a genuine closed-loop test, not just offline metrics &mdash; this dataset and
+setup were well-matched. For maximizing absolute accuracy, <em>how</em> the available data is used
+mattered more than architecture or hyperparameter tuning, but the amount of genuinely diverse real
+data still appears to be the binding constraint on how far that can go.
+</div>
+
+<h2>References</h2>
+<div class="refs">
+<p>Bojarski, M., Del Testa, D., Dworakowski, D., Firner, B., Flepp, B., Goyal, P., Jackel, L. D.,
+Monfort, M., Muller, U., Zhang, J., Zhang, X., Zhao, J., &amp; Zieba, K. (2016). <em>End to End
+Learning for Self-Driving Cars.</em> NVIDIA Corporation. arXiv:1604.07316.</p>
+<p>Kaggle dataset: <em>Udacity Self Driving Car &mdash; Behavioural Cloning</em>,
+andy8744/udacity-self-driving-car-behavioural-cloning.</p>
+<p>Udacity, Inc. <em>Self-Driving Car Simulator.</em></p>
+</div>
+
+<h2>Theoretical Question 1: Linear Models vs. CNNs vs. RNN/Transformers</h2>
+<p><em>Compare regarding typical data types, strengths/weaknesses, and overfitting risk &amp;
+regularization; one use case each.</em></p>
+
+<table style="font-size: 8.7pt;">
+<tr><th>Aspect</th><th>Linear models</th><th>CNNs</th><th>RNN / Transformers</th></tr>
+<tr><td>Typical data</td><td>Tabular/structured numeric features</td>
+    <td>Grid data, local spatial correlation (images, spectrograms)</td>
+    <td>Sequential/ordered data (text, time series, audio)</td></tr>
+<tr><td>Strengths</td>
+    <td>Interpretable coefficients; fast/convex to fit; cheap, strong baseline</td>
+    <td>Weight sharing captures translation-invariant local patterns; hierarchical features
+    (edges&rarr;textures&rarr;objects) with few weights vs. a comparable dense net</td>
+    <td>Model order/temporal dependencies; Transformers capture long-range dependencies in
+    parallel via self-attention, avoiding RNNs' sequential bottleneck</td></tr>
+<tr><td>Weaknesses</td>
+    <td>Assumes linear/hand-engineered input&rarr;target relation; no automatic hierarchical
+    structure</td>
+    <td>Limited native long-range context without deep stacking/attention; needs sizeable
+    labeled data or pretraining</td>
+    <td>RNNs: sequential, slow, vanishing/exploding gradients on long sequences. Transformers:
+    data/compute-hungry, attention cost grows quadratically in sequence length</td></tr>
+<tr><td>Overfitting &amp; reg.</td>
+    <td>Low risk (few params), but occurs with many/collinear features; L1 (Lasso) / L2 (Ridge)
+    penalties</td>
+    <td>Moderate&ndash;high on small data; augmentation, dropout, batch norm, weight decay
+    &mdash; the combination this project's own PilotNet uses (Section 3)</td>
+    <td>High (large param counts); dropout, layer norm, weight decay, early stopping,
+    large-scale pretraining/fine-tuning</td></tr>
+<tr><td>Use case</td>
+    <td>Credit-scoring from applicant features, where interpretability is a regulatory need</td>
+    <td>This project: steering-angle prediction from dashcam images (PilotNet)</td>
+    <td>Machine translation (Transformers); sensor/price time-series forecasting (RNN/LSTM)</td></tr>
+</table>
+
+<h2>Theoretical Question 2: Training Neural Networks with Gradient Descent</h2>
+<ol>
+  <li><strong>Loss function and its gradient.</strong> The loss quantifies how wrong predictions
+  are relative to targets (e.g. MSE in this project's training loop, Section 3). Its gradient
+  w.r.t. each parameter, from backpropagation, points toward <em>steepest increase</em> in loss;
+  stepping in the <em>negative</em> gradient direction is what reduces loss each update.</li>
+  <li><strong>Batch vs. mini-batch vs. stochastic GD.</strong> Batch GD uses the whole training set
+  per update: stable but slow/memory-heavy. Stochastic GD updates per single example: fast per
+  step, and noise can escape shallow local minima, but high variance can prevent settling at an
+  optimum. Mini-batch GD (used here, <code>BATCH_SIZE=64</code>) is the practical middle ground
+  almost all deep learning uses, balancing gradient-estimate stability against compute cost and
+  hardware parallelism.</li>
+  <li><strong>The learning rate</strong> scales the update step along the negative gradient. Too
+  large: updates overshoot, causing oscillation or divergence &mdash; seen directly here when an
+  over-aggressive augmentation/scheduler combination destabilized training (Section 4). Too small:
+  convergence is impractically slow or stalls on plateaus. This project's
+  <code>ReduceLROnPlateau</code> addresses both, shrinking the rate only once validation loss stops
+  improving.</li>
+  <li><strong>Gradient descent vs. ascent.</strong> Descent moves along the <em>negative</em>
+  gradient to <em>minimize</em> an objective &mdash; the default for supervised learning, including
+  this project's regression. Ascent moves along the <em>positive</em> gradient to
+  <em>maximize</em> an objective, used for a reward or likelihood to be maximized &mdash; e.g.
+  policy-gradient reinforcement learning, or log-likelihood maximization (often reframed as
+  minimizing negative log-likelihood in practice, which is why descent is more commonly
+  implemented).</li>
+</ol>
+
+</body>
+</html>
